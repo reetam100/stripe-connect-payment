@@ -4,7 +4,7 @@ const ApiError = require('../utils/ApiError');
 const beauticianService = require('./beautician.service')
 const userService = require('./user.service')
 
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // use your SECRET KEY from stripe dashboard
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const createSeller = async (email) => {
   const account = await stripe.accounts.create({
@@ -29,14 +29,14 @@ const generateAccountLink = async (beauticianId) => {
   }
   const link = await stripe.accountLinks.create({
     account: accountId,
-    refresh_url: 'YOUR REFRESH URL',
-    return_url: 'YOUR SUCCESS URL',
+    refresh_url: 'http://localhost:3000/v1/payment/failed',
+    return_url: 'http://localhost:3000/v1/beautician/seller/create/success',
     type: 'account_onboarding',
   })
   return link
 }
 
-const processPayment = async (appointment, accountId) => {
+const processPayment = async (appointment) => {
   console.log("appointment: ", appointment);
   if (appointment.paymentStatus === "paid") {
     throw new ApiError(httpStatus.CONFLICT, "Payment is already done for this appointment")
@@ -51,7 +51,7 @@ const processPayment = async (appointment, accountId) => {
     amount: appointment.amount * 100,
     currency: 'usd',
     customer: appointment.user.customerId,
-    payment_method: cards.data[0].id,
+    payment_method: cards.data[1].id,
     automatic_payment_methods: {
       enabled: true,
       allow_redirects: 'never'
@@ -60,7 +60,7 @@ const processPayment = async (appointment, accountId) => {
     // on_behalf_of: accountId
     transfer_data: {
       // amount: 877,
-      destination: accountId,
+      destination: appointment.beautician.accountId
     },// You can set a fee for your platform
   },
   );
@@ -74,7 +74,28 @@ const processPayment = async (appointment, accountId) => {
   return confirmedPaymentIntent
 }
 
-const createCustomer = async ({ type, email, accountId, card }) => {
+// const createCard = async ({ card, type }) => {
+//   const card = await stripe.customers.createSource(
+//     ''
+//   )
+
+//   const paymentMethod = await stripe.paymentMethods.create({
+//     type,
+//     card
+//   },)
+//   console.log("card---->: ", paymentMethod)
+//   return paymentMethod;
+// }
+
+const listAvailableCards = async (customerId) => {
+  const cards = await stripe.customers.listSources(
+    customerId,
+    { object: 'card' }
+  )
+  return cards
+}
+
+const createCustomer = async ({ email, card }) => {
   const user = await userService.getUserByEmail(email);
   let customer;
   if (user && user.customerId) {
@@ -88,9 +109,16 @@ const createCustomer = async ({ type, email, accountId, card }) => {
     await user.save();
   }
 
+  const { number, exp_month, exp_year, cvc } = card;
+  const availableCards = await listAvailableCards(user.customerId);
+  for (let c of availableCards.data) {
+    if (c.last4 === number.slice(-4)) {
+      throw new ApiError(httpStatus.CONFLICT, "You have already added this card")
+    }
+  }
+
   // console.log(user)
   // console.log(number);
-  const { number, exp_month, exp_year, cvc } = card;
   const cardToken = await stripe.tokens.create({
     card: {
       number,
@@ -105,19 +133,37 @@ const createCustomer = async ({ type, email, accountId, card }) => {
   const createdCard = await stripe.customers.createSource(user.customerId, { source: cardToken.id })
   console.log("created card: ", createdCard)
 
-
-  const cards = await stripe.customers.listSources(
-    user.customerId,
-    { object: 'card' }
-  )
-  console.log("cards: ", cards)
-  return cards.data;
+  return createdCard;
 }
 
 const listAllPayments = async (accountId) => {
-  const paymentIntents = await stripe.transfers.list({ destination: accountId });
-
+  let paymentIntents = await stripe.transfers.list({ destination: accountId });
+  paymentIntents = paymentIntents.data.map(pi => ({
+    ...pi,
+    amount: pi.amount / 100
+  }))
   return paymentIntents;
+}
+
+const listAllBalanceTransactions = async (accountId) => {
+  const balanceTransactions = await stripe.balanceTransactions.list({
+    stripeAccount: accountId
+  })
+
+  let charges = balanceTransactions.data.filter(bt => bt.reporting_category === "charge")
+  charges = charges.map(charge => ({
+    ...charge,
+    amount: charge.amount / 100
+  }));
+  let payouts = balanceTransactions.data.filter(bt => bt.reporting_category === "payout")
+  payouts = payouts.map(payout => ({
+    ...payout,
+    amount: payout.amount / 100
+  }));
+  return {
+    charges,
+    payouts
+  };
 }
 
 const createPayout = async (amount, bankAccountId, accountId) => {
@@ -130,8 +176,21 @@ const createPayout = async (amount, bankAccountId, accountId) => {
     stripeAccount: accountId
   })
 
-  console.log()
+  // console.log()
   return payoutObj;
+}
+
+const listAllPayouts = async (accountId) => {
+  let payouts = await stripe.payouts.list({
+    stripeAccount: accountId
+  })
+  payouts = payouts.data.map(payout => ({
+    ...payout,
+    amount: payout.amount / 100,
+    // totalPayout: 
+  }));
+
+  return payouts
 }
 
 const getBalance = async (accountId) => {
@@ -145,9 +204,11 @@ module.exports = {
   createSeller,
   generateAccountLink,
   processPayment,
-  // createCard,
   createCustomer,
   listAllPayments,
   createPayout,
-  getBalance
+  getBalance,
+  listAllBalanceTransactions,
+  listAvailableCards,
+  listAllPayouts
 }
