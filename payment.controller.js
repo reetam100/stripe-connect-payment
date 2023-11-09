@@ -21,7 +21,7 @@ const createCustomer = catchAsync(async (req, res) => {
   // const card = await paymentService.createCard(req.body);
   // console.log("card === ", card)
   // return;
-  console.log(req.body);
+  // console.log(req.body);
   // const customer = await paymentService.createCustomer(req.body.type, req.body.email, req.body.card.number, req.body.card.exp_month, req.body.card.exp_year, req.body.card.cvc, req.body.accountId);
   const customer = await paymentService.createCustomer(req.body);
   return new ApiSuccess(res, httpStatus.CREATED, "Customer added successfully", customer)
@@ -38,9 +38,17 @@ const createPayout = catchAsync(async (req, res) => {
 })
 
 const getBalance = catchAsync(async (req, res) => {
-  const balance = await paymentService.getBalance(req.user.accountId);
-  return new ApiSuccess(res, httpStatus.OK, 'Balance fetched successfully', balance);
+  const totalEarning = await paymentService.getTotalEarning(req.user.accountId);
+  const withdrawBalance = await paymentService.getWithdrawBalance(req.user.accountId)
+  const remainingAmount = Number(totalEarning) - Number(withdrawBalance)
+  const balanceObj = {
+    totalEarning,
+    withdrawBalance,
+    remainingAmount: remainingAmount.toFixed(2)
+  }
+  return new ApiSuccess(res, httpStatus.OK, 'Balance fetched successfully', balanceObj);
 })
+
 
 const listBalanceTransactions = catchAsync(async (req, res) => {
   const balanceTransactions = await paymentService.listAllBalanceTransactions(req.user.accountId);
@@ -54,9 +62,14 @@ const listCardsForUser = catchAsync(async (req, res) => {
 
 const listAllPayouts = catchAsync(async (req, res) => {
   const payouts = await paymentService.listAllPayouts(req.user.accountId);
-  return new ApiSuccess(res, httpStatus.OK, "Payouts", payouts.data);
+  return new ApiSuccess(res, httpStatus.OK, "Payouts", payouts);
 })
 
+const deleteCard = catchAsync(async (req, res) => {
+  const deleted = await paymentService.deleteCard(req.params.cardId, req.user.customerId);
+  console.log(deleted)
+  return new ApiSuccess(res, httpStatus.OK, "Card deleted successfully", deleted);
+})
 
 module.exports = {
   createSeller,
@@ -67,5 +80,6 @@ module.exports = {
   getBalance,
   listBalanceTransactions,
   listCardsForUser,
-  listAllPayouts
+  listAllPayouts,
+  deleteCard
 }
