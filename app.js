@@ -24,54 +24,93 @@ if (config.env !== 'test') {
 
 // set security HTTP headers
 app.use(helmet());
-app.post('/webhook', express.raw({ type: 'application/json' }), (request, response) => {
-  const payloadString = request.body;
-  // const payloadString = request;
-  // const payloadBuffer = Buffer.from(JSON.stringify(payloadString));
-  // const payloadString = request.body;
-  console.log("payload (request): ", payloadString)
-  console.log("11111111111111111111111111111111111111111");
-  let endpointSecret = "{{use your endpoint secret}}"
-  const sig = request.headers['stripe-signature'];
-  console.log(sig.toString());
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const payload = req.body;
+  const sig = req.headers['stripe-signature'];
+  let endpointSecret = "whsec_a74da2b3b263ce7c8f5674096033a0e1876816db54c534dd45ca0c0ed6f5b817"
 
-  // const header = stripe.webhooks.generateTestHeaderString({
-  //   payload: payloadString,
-  //   endpointSecret,
-  // });
-  // const sig = "sk_test_51IcQKWDwwlfx8vZDtKSBliM7hrut2EVKMBrq4L8oV1gfy4PgtTQqrlS7SfNKO6HunhNkW4lXmULh2bEiTUjLXEOQ00Z377rtca"
-  // console.log("signature: ", sig)
-  // console.log("signature type: ---> ", typeof sig)
   let event;
 
   try {
-    // event = request.body
-    event = stripe.webhooks.constructEvent(payloadString, sig, endpointSecret);
+    event = stripe.webhooks.constructEvent(payload, sig, endpointSecret);
   } catch (err) {
-    console.log("222222222222222222222222222222222222", err);
-    // response.status(400).send(`Webhook Error: ${err.message}`);
-    return;
+    console.error('Webhook error:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
-  console.log("Event Type: ", event.type);
+  // console.log(event.type);
 
-  // Handle the event
+  // console.log("Event Object: ", event.data.object);
   switch (event.type) {
-    case 'payment_intent.succeeded':
-      const paymentIntentSucceeded = event.data.object;
-      // console.log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
-      // Then define and call a function to handle the event payment_intent.succeeded
-      console.log("Payment Intent success", paymentIntentSucceeded);
-      // return response.json()
+    case 'invoice.payment_succeeded':
+      if (event.data.object.billing_reason === "subscription_create") {
+        const customerEmail = event.data.object.customer_email;
+        const updatedCreator = await User.findOneAndUpdate(
+          { email: customerEmail },
+          {
+            $set: {
+              'subscription.subscription_id': event.data.object.subscription,
+              'subscription.plan_id': event.data.object.lines.data[0].plan.id,
+              'subscription.invoice_url': event.data.object.invoice_pdf,
+            },
+          },
+          { new: true, useFindAndModify: false });
+        console.log("updated creator: ", updatedCreator);
+      }
       break;
-    // ... handle other event types
+
+    case 'customer.subscription.deleted':
+      const customerEmail = event.data.object.customer_email;
+      console.log(event.data.object)
+      const creator = await User.findOneAndUpdate({
+        email: customerEmail
+      }, {
+        $set: {
+          'subscription.plan_id': "",
+          'subscription.subscription_id': "",
+          'subscription.invoice_url': ""
+        }
+      }, { new: true, useFindAndModify: false })
+      console.log("new creator: ----> ", creator);
+      break;
+
+    case 'payment_intent.succeeded':
+      console.log("------------payment intent succeeded------------");
+      console.log(event.data.object);
+
+    case 'transfer.created':
+      console.log("---------------transfer created---------------");
+      console.log(event.data.object);
+      // add to orders table
+      console.log(typeof mongoose.Types.ObjectId(event.data.object.metadata.user_id))
+      if (Object.keys(event.data.object.metadata).length !== 0) {
+        const order = await Order.create({
+          userId: mongoose.Types.ObjectId(event.data.object.metadata.user_id),
+          transferId: event.data.object.id,
+          transactionId: event.data.object.balance_transaction,
+          songName: event.data.object.metadata.song_name,
+          licenseType: event.data.object.metadata.license_name,
+          totalPrice: event.data.object.amount / 100,
+          songGenre: event.data.object.metadata.song_genre
+        })
+
+        // add to transaction table
+        await Transaction.create({
+          transactionId: event.data.object.balance_transaction,
+          creator: mongoose.Types.ObjectId(event.data.object.metadata.creator_id),
+          song: event.data.object.metadata.song_name,
+          genre: event.data.object.metadata.song_genre,
+          status: "successful",
+          licenseType: event.data.object.metadata.license_name,
+          price: event.data.object.amount / 100,
+          orderId: order._id,
+        })
+      }
+
     default:
       console.log(`Unhandled event type ${event.type}`);
   }
 
-  // Return a 200 response to acknowledge receipt of the event
-  response.send({
-    message: "Payment Succeeded"
-  });
+  res.json({ received: true });
 });
 
 // parse json request body
